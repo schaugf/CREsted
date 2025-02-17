@@ -42,12 +42,16 @@ class AnnDataLoader:
     def __init__(
         self,
         dataset: AnnDataset,
+        n_gpus: int,
+        gpu_rank: int,
         batch_size: int,
         shuffle: bool = False,
         drop_remainder: bool = True,
     ):
         """Initialize the DataLoader with the provided dataset and options."""
         self.dataset = dataset
+        self.n_gpus = n_gpus
+        self.gpu_rank = gpu_rank
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.drop_remainder = drop_remainder
@@ -68,8 +72,15 @@ class AnnDataLoader:
 
     def _create_dataset(self):
         if os.environ["KERAS_BACKEND"] == "torch":
+            sampler = torch.utils.data.distributed.DistributedSampler(
+                self.dataset,
+                num_replicas=self.n_gpus,
+                rank=self.gpu_rank,
+                shuffle=False,
+            )
             return DataLoader(
                 self.dataset,
+                sampler=sampler,
                 batch_size=self.batch_size,
                 drop_last=self.drop_remainder,
                 num_workers=0,

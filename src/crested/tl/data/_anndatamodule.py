@@ -62,6 +62,8 @@ class AnnDataModule:
     def __init__(
         self,
         adata,
+        n_gpus,
+        gpu_rank,
         genome: PathLike | Genome | None = None,
         chromsizes_file: PathLike | None = None,
         in_memory: bool = True,
@@ -74,6 +76,8 @@ class AnnDataModule:
     ):
         """Initialize the DataModule with the provided dataset and options."""
         self.adata = adata
+        self.n_gpus = n_gpus
+        self.gpu_rank = gpu_rank
         self.genome = _resolve_genome(genome, chromsizes_file)  # backward compatibility
         self.always_reverse_complement = always_reverse_complement
         self.in_memory = in_memory
@@ -162,6 +166,8 @@ class AnnDataModule:
             raise ValueError("train_dataset is not set. Run setup('fit') first.")
         return AnnDataLoader(
             self.train_dataset,
+            gpu_rank=self.gpu_rank,
+            n_gpus=self.n_gpus,
             batch_size=self.batch_size,
             shuffle=self.shuffle,
             drop_remainder=False,
@@ -174,6 +180,8 @@ class AnnDataModule:
             raise ValueError("val_dataset is not set. Run setup('fit') first.")
         return AnnDataLoader(
             self.val_dataset,
+            gpu_rank=self.gpu_rank,
+            n_gpus=self.n_gpus,
             batch_size=self.batch_size,
             shuffle=False,
             drop_remainder=False,
