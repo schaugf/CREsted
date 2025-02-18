@@ -465,14 +465,14 @@ class Crested:
                             f"MSE : {round(mse, 3)}"
                             )
                     
-                    # compute validation loss
-                    val_loss = self.compute_validation_loss(val_loader)
-                    wandb.log({
-                        "Validation Loss": val_loss,
-                    })
+                # compute validation loss
+                val_loss = self.compute_validation_loss(val_loader)
+                wandb.log({
+                    "Validation Loss": val_loss,
+                })
 
-                    print(f"saving model state for epoch {epoch} to {self.save_dir}")
-                    self.model.module.keras_model.save(f"{self.save_dir}/epoch_{epoch}.keras")
+                print(f"saving model state for epoch {epoch} to {self.save_dir}")
+                self.model.module.keras_model.save(f"{self.save_dir}/epoch_{epoch}.keras")
 
 
         except KeyboardInterrupt:
