@@ -13,7 +13,9 @@ import numpy as np
 from anndata import AnnData
 from loguru import logger
 from pysam import FastaFile
+from scipy.stats import pearsonr
 from tqdm import tqdm
+import torch
 import wandb
 
 from crested.tl import TaskConfig
@@ -124,6 +126,8 @@ class Crested:
 
         self.seed = seed
         self.save_dir = os.path.join(self.project_name, self.run_name)
+        os.makedirs(self.save_dir, exist_ok=True)
+
         self._check_continued_training()  # check if continuing training from a previous run
         if self.seed:
             keras.utils.set_random_seed(self.seed)
@@ -402,64 +406,73 @@ class Crested:
                     shuffle=False,
                     initial_epoch=self.max_epoch,
                 )
+
             # torch.Dataloader throws "repeat" warnings when using steps_per_epoch
             elif os.environ["KERAS_BACKEND"] == "torch":
                 train_loader = self.anndatamodule.train_dataloader._create_dataset()
+                val_loader = self.anndatamodule.val_dataloader._create_dataset()
 
-                for epoch in range(epochs):
-                    running_loss = 0.0
-                    running_loss_count = 0
-                    for batch_idx, (inputs, targets) in enumerate(train_loader): 
-                        inputs = inputs.cuda(non_blocking=True)
-                        targets = targets.cuda(non_blocking=True)
+            for epoch in range(epochs):
+                running_loss = 0.0
+                running_loss_count = 0
+                for batch_idx, (inputs, targets) in enumerate(train_loader): 
+                    inputs = inputs.cuda(non_blocking=True)
+                    targets = targets.cuda(non_blocking=True)
 
-                        # Forward pass
-                        outputs = self.model(inputs)
+                    # Forward pass
+                    outputs = self.model(inputs)
 
-                        if self.model.module.keras_model.name == "Enformer":
-                            # conjole into predicting a single region
-                            outputs = outputs.max(1)
+                    if self.model.module.keras_model.name == "Enformer":
+                        # conjole into predicting a single region
+                        outputs = outputs.max(1)
 
-                        loss = self.config.loss(outputs, targets)
+                    loss = self.config.loss(outputs, targets)
+                    
+                    # Backward and optimize
+                    optimizer.zero_grad() 
+
+                    loss.backward()
+                    optimizer.step()
+
+                    running_loss += loss.item()
+                    running_loss_count += 1
+
+                    if batch_idx % log_iter == 0:
+                        # compute correlation metric
+                        pcor = pearsonr(
+                            outputs.cpu().detach().numpy().flatten(), 
+                            targets.cpu().detach().numpy().flatten()
+                            ).statistic.item()
                         
-                        if np.isnan(loss.cpu().detach().numpy()):
-                            print("========================")
-                            print("NAN LOSS DETECTED")
-                            print("========================")
-                            print(f"\t Loss: {loss}")
-                            print(f"\t Inputs: {inputs}")
-                            print(f"\t Targets: {targets}")
-                            print(f"\t Outputs: {outputs}")
-                            print("========================")
-                            import sys
-                            sys.exit()
+                        # compute mean square error metric
+                        mse = ((targets - outputs) ** 2).mean().item()
 
-                        
-                        # Backward and optimize
-                        optimizer.zero_grad()  # passed as argument
-
-                        loss.backward()
-                        optimizer.step()
-
-                        running_loss += loss.item()
-                        running_loss_count += 1
-
-                        if batch_idx % log_iter == 0:
-                            # compute metrics
-                            
-                            wandb.log({
-                                "epoch": epoch,
-                                "batch": batch_idx,
-                                "loss": loss,
-                                })
+                        wandb.log({
+                            "Epoch": epoch,
+                            "Batch": batch_idx,
+                            "self.config.loss.name": loss,
+                            "Pearson Correlation": pcor,
+                            "Mean Square Error": mse,
+                            })
 
 
-                            # Print loss statistics
-                            print(
-                                f"Epoch: {epoch + 1}/{epochs}, "
-                                f"Batch: {batch_idx}/{len(train_loader)}, "
-                                f"Loss: {round(running_loss / running_loss_count, 5)} \n"
+                        # Print statistics
+                        print(
+                            f"Epoch: {epoch + 1}/{epochs}, "
+                            f"Batch: {batch_idx}/{len(train_loader)}, "
+                            f"Loss: {round(running_loss / running_loss_count, 3)}, "
+                            f"Pearson R: {round(pcor, 3)}, "
+                            f"MSE : {round(mse, 3)}"
                             )
+                    
+                    # compute validation loss
+                    val_loss = self.compute_validation_loss(val_loader)
+                    wandb.log({
+                        "Validation Loss": val_loss,
+                    })
+
+                    print(f"saving model state for epoch {epoch} to {self.save_dir}")
+                    self.model.module.keras_model.save(f"{self.save_dir}/epoch_{epoch}.keras")
 
 
         except KeyboardInterrupt:
@@ -467,6 +480,29 @@ class Crested:
         finally:
             if run:
                 run.finish()
+
+    def compute_validation_loss(self, val_loader):
+        self.model.eval()  # Set model to evaluation mode
+        total_loss = 0.0
+        num_samples = 0
+
+        with torch.no_grad():  # Disable gradient computation
+            for batch_idx, (inputs, targets) in enumerate(val_loader):
+                inputs = inputs.cuda(non_blocking=True)
+                targets = targets.cuda(non_blocking=True)
+
+                # Forward pass
+                outputs = self.model(inputs)
+                loss = self.config.loss(outputs, targets)
+
+                # Accumulate total loss
+                total_loss += loss.item() * inputs.size(0)  # Scale loss by batch size
+                num_samples += inputs.size(0)
+
+        # Compute mean validation error (MSE)
+        mean_val_error = total_loss / num_samples
+        return mean_val_error
+
 
     def transferlearn(
         self,

@@ -194,6 +194,8 @@ class AnnDataModule:
             raise ValueError("test_dataset is not set. Run setup('test') first.")
         return AnnDataLoader(
             self.test_dataset,
+            gpu_rank=self.gpu_rank,
+            n_gpus=self.n_gpus,
             batch_size=self.batch_size,
             shuffle=False,
             drop_remainder=False,
