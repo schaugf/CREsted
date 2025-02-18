@@ -14,6 +14,7 @@ from anndata import AnnData
 from loguru import logger
 from pysam import FastaFile
 from tqdm import tqdm
+import wandb
 
 from crested.tl import TaskConfig
 from crested.tl.data import AnnDataModule
@@ -178,25 +179,37 @@ class Crested:
             callbacks.extend(custom_callbacks)
         return callbacks
 
-    @staticmethod
-    def _initialize_logger(logger_type: str | None, project_name: str, run_name: str):
+
+    def _initialize_logger(self, logger_type: str | None, project_name: str, run_name: str):
         """Initialize logger."""
         callbacks = []
         if logger_type == "wandb":
-            if os.environ["KERAS_BACKEND"] != "tensorflow":
-                raise ValueError(
-                    "Wandb logging is only available with the tensorflow backend until wandb has finished their keras 3.0 integration."
+            if os.environ["KERAS_BACKEND"] == "tensorflow":    
+                from wandb.integration.keras import WandbMetricsLogger
+                run = wandb.init(
+                    project=project_name,
+                    name=run_name,
                 )
-            import wandb
-            from wandb.integration.keras import WandbMetricsLogger
+                wandb_callback_epoch = WandbMetricsLogger(log_freq="epoch")
+                wandb_callback_batch = WandbMetricsLogger(log_freq=10)
+                callbacks.extend([wandb_callback_epoch, wandb_callback_batch])
+            else:
+                print("using weights and biases with pytorch. Monitoring trianing loop...")
+                wandb.init(
+                    # set the wandb project where this run will be logged
+                    project=self.run_name,
 
-            run = wandb.init(
-                project=project_name,
-                name=run_name,
-            )
-            wandb_callback_epoch = WandbMetricsLogger(log_freq="epoch")
-            wandb_callback_batch = WandbMetricsLogger(log_freq=10)
-            callbacks.extend([wandb_callback_epoch, wandb_callback_batch])
+                    # track hyperparameters and run metadata
+                    config={
+                        "architecture": self.model.module.keras_model.name,
+                        "loss": self.config.loss.name,
+                        "optimizer": self.config.optimizer.name,
+                        "learning_rate": round(float(self.config.optimizer.learning_rate.value), 9),
+                    }
+                )
+
+                run = None
+
         elif logger_type == "tensorboard":
             if os.environ["KERAS_BACKEND"] != "tensorflow":
                 raise ValueError("Tensorboard requires a tensorflow installation")
@@ -206,6 +219,7 @@ class Crested:
             )
             callbacks.append(tensorboard_callback)
             run = None
+
         elif logger_type == "dvc":
             if os.environ["KERAS_BACKEND"] != "tensorflow":
                 raise ValueError("DVC Keras logging requires a tensorflow backend")
@@ -254,6 +268,7 @@ class Crested:
         learning_rate_reduce_metric: str = "val_loss",
         learning_rate_reduce_mode: str = "min",
         custom_callbacks: list | None = None,
+        log_iter=100
     ) -> None:
         """
         Fit the model on the training and validation set.
@@ -400,8 +415,26 @@ class Crested:
 
                         # Forward pass
                         outputs = self.model(inputs)
-                        loss = self.config.loss(outputs, targets)
 
+                        if self.model.module.keras_model.name == "Enformer":
+                            # conjole into predicting a single region
+                            outputs = outputs.max(1)
+
+                        loss = self.config.loss(outputs, targets)
+                        
+                        if np.isnan(loss.cpu().detach().numpy()):
+                            print("========================")
+                            print("NAN LOSS DETECTED")
+                            print("========================")
+                            print(f"\t Loss: {loss}")
+                            print(f"\t Inputs: {inputs}")
+                            print(f"\t Targets: {targets}")
+                            print(f"\t Outputs: {outputs}")
+                            print("========================")
+                            import sys
+                            sys.exit()
+
+                        
                         # Backward and optimize
                         optimizer.zero_grad()  # passed as argument
 
@@ -411,12 +444,22 @@ class Crested:
                         running_loss += loss.item()
                         running_loss_count += 1
 
-                        # Print loss statistics
-                        print(
-                            f"Epoch: {epoch + 1}/{epochs}, "
-                            f"Batch: {batch_idx}/{len(train_loader)}, "
-                            f"Loss: {round(running_loss / running_loss_count, 5)} \n"
-                        )
+                        if batch_idx % log_iter == 0:
+                            # compute metrics
+                            
+                            wandb.log({
+                                "epoch": epoch,
+                                "batch": batch_idx,
+                                "loss": loss,
+                                })
+
+
+                            # Print loss statistics
+                            print(
+                                f"Epoch: {epoch + 1}/{epochs}, "
+                                f"Batch: {batch_idx}/{len(train_loader)}, "
+                                f"Loss: {round(running_loss / running_loss_count, 5)} \n"
+                            )
 
 
         except KeyboardInterrupt:
