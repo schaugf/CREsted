@@ -450,7 +450,7 @@ class Crested:
                         wandb.log({
                             "Epoch": epoch,
                             "Batch": batch_idx,
-                            "self.config.loss.name": loss,
+                            self.config.loss.name: loss,
                             "Pearson Correlation": pcor,
                             "Mean Square Error": mse,
                             })
